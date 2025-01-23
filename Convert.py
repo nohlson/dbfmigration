@@ -2,9 +2,7 @@ import json
 import pymongo
 from collections import defaultdict
 from bson.objectid import ObjectId
-
-MONGO_HOSTNAME = "localhost"
-DATABASE_NAME = "migrationtest"
+import argparse
 
 ##############################
 # Helper Conversion Functions
@@ -316,23 +314,42 @@ def load_customer_shipping_addresses(shipping_file, db, customer_id_map):
 # Main Migration Script
 ###################################
 def main():
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description="Migrate data to MongoDB.")
+    parser.add_argument("--mongo-hostname", type=str, default="localhost", help="MongoDB hostname")
+    parser.add_argument("--database-name", type=str, default="migrationtest", help="Database name")
+    parser.add_argument("--suppliers-file", type=str, required=True, help="Path to suppliers JSON file")
+    parser.add_argument("--customers-file", type=str, required=True, help="Path to customers JSON file")
+    parser.add_argument("--parts-file", type=str, required=True, help="Path to parts JSON file")
+    parser.add_argument("--shipping-file", type=str, required=True, help="Path to customer shipping addresses JSON file")
+
+    args = parser.parse_args()
+
+    MONGO_HOSTNAME = args.mongo_hostname
+    DATABASE_NAME = args.database_name
+    suppliers_file = args.suppliers_file
+    customers_file = args.customers_file
+    parts_file = args.parts_file
+    shipping_file = args.shipping_file
+
+    # Connect to MongoDB
     client = pymongo.MongoClient("mongodb://" + MONGO_HOSTNAME + ":27017/")
     db = client[DATABASE_NAME]
 
     # 1) Suppliers (and their Contacts)
-    supplier_id_map = load_suppliers("json/SupplierInfo.json", db)
+    supplier_id_map = load_suppliers(suppliers_file, db)
     print(f"Imported {len(supplier_id_map)} suppliers.")
 
     # 2) Customers (and their Contacts)
-    customer_id_map = load_customers("json/CustomerInfo.json", db)
+    customer_id_map = load_customers(customers_file, db)
     print(f"Imported {len(customer_id_map)} customers.")
 
     # 3) Parts referencing suppliers
-    load_parts("json/Inventory.json", db, supplier_id_map)
+    load_parts(parts_file, db, supplier_id_map)
     print("Imported parts.")
 
     # 4) Shipping addresses for customers
-    load_customer_shipping_addresses("json/CustomerShipping.json", db, customer_id_map)
+    load_customer_shipping_addresses(shipping_file, db, customer_id_map)
     print("Updated customer shipping addresses.")
 
     print("Data migration completed successfully.")
