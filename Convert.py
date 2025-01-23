@@ -1,5 +1,6 @@
 import json
 import pymongo
+from collections import defaultdict
 from bson.objectid import ObjectId
 
 ##############################
@@ -22,18 +23,50 @@ def safe_str(value, default=""):
         return default
     return str(value).strip()
 
+##############################
+# Helper: parse "CITY, STATE ZIP"
+##############################
+def parse_city_state_zip(line):
+    """
+    Expects something like: "NEWTON, NC 28658"
+    Returns (city, state, zip) => ("NEWTON", "NC", "28658")
+    If parsing fails or format is off, we do best-effort or fallback.
+    """
+    line = safe_str(line)
+    if not line:
+        return ("", "", "")
+    
+    parts = line.split(",")
+    if len(parts) < 2:
+        # No comma => can't parse well. 
+        # We'll put everything in city, leaving state/zip blank
+        return (line, "", "")
+
+    # City is everything before the first comma
+    city = parts[0].strip()
+
+    # The remainder is typically "NC 28658"
+    remainder = parts[1].strip()
+    subparts = remainder.split()
+    if len(subparts) >= 2:
+        state = subparts[0]
+        zip_ = subparts[1]
+    else:
+        # If there's only one subpart, let's treat it as state.
+        state = remainder
+        zip_ = ""
+
+    return (city, state, zip_)
+
 ###################################
 # Contact Creation Helper
 ###################################
 def create_contact(db, full_name, phone="", fax="", email="", company="", title=""):
     """
-    Creates a new Contact document in MongoDB and returns its ObjectId.
-    full_name is stored as first_name, last_name is left blank.
-    phone and fax (if present) go into phone_numbers array, email => email_addresses.
+    Creates a new Contact document in 'contacts' collection; returns the _id.
+    We'll treat full_name as 'first_name' (leaving last_name blank).
     """
     if not full_name:
-        # If there's truly no contact name, we might skip creating an empty contact
-        # and just return None. But let's create it for consistency.
         full_name = ""
 
     contact_doc = {
@@ -45,7 +78,6 @@ def create_contact(db, full_name, phone="", fax="", email="", company="", title=
         "company": company
     }
 
-    # If phone or fax exist, store them
     phone_list = []
     if phone:
         phone_list.append(phone)
@@ -54,7 +86,6 @@ def create_contact(db, full_name, phone="", fax="", email="", company="", title=
     if phone_list:
         contact_doc["phone_numbers"] = phone_list
 
-    # If email present
     if email:
         contact_doc["email_addresses"].append(email)
 
@@ -65,12 +96,6 @@ def create_contact(db, full_name, phone="", fax="", email="", company="", title=
 # Load Suppliers
 ###################################
 def load_suppliers(suppliers_file, db):
-    """
-    1) Read supplier data from JSON
-    2) Create a Contact doc for each 'CONTACT'
-    3) Create a Supplier doc referencing that contact
-    4) Return a map: { legacy_vendor_code: new_supplier_objectid }
-    """
     with open(suppliers_file, 'r', encoding='utf-8') as f:
         supplier_data = json.load(f)
 
@@ -80,7 +105,7 @@ def load_suppliers(suppliers_file, db):
     for item in supplier_data:
         vendno = safe_str(item.get("VENDNO"))
 
-        # Create a contact doc for this supplier, if any
+        # Create a Contact doc for this supplier
         contact_id = create_contact(
             db=db,
             full_name=safe_str(item.get("CONTACT")),
@@ -93,7 +118,7 @@ def load_suppliers(suppliers_file, db):
 
         supplier_doc = {
             "vendor_number": vendno,
-            "company_name": safe_str(item.get("COMPANY", "Unknown Company")) or "Unknown Company",
+            "company_name": safe_str(item.get("COMPANY")) or "Unknown Company",
             "phone_contacts": [safe_str(item["PHONE"])] if item.get("PHONE") else [],
             "fax_contact": safe_str(item.get("FAXNO")),
             "address": {
@@ -109,19 +134,16 @@ def load_suppliers(suppliers_file, db):
             "standard_discount": safe_convert_float(item.get("PDISC"), 0.0),
             "notes": safe_str(item.get("COMMENT")),
             "vendor_email": safe_str(item.get("EMAIL")),
-            "payment_method": ""  # Put logic here if you have a field for payment_method
+            "payment_method": ""
         }
 
-        # If we got a valid contact_id, reference it
         if contact_id:
             supplier_doc["contacts"].append(contact_id)
 
         new_supplier_docs.append(supplier_doc)
 
-    # Insert them all at once
     result = db.suppliers.insert_many(new_supplier_docs)
 
-    # Build map from vendno -> inserted_id
     for old_item, inserted_id in zip(supplier_data, result.inserted_ids):
         vendno = safe_str(old_item.get("VENDNO"))
         supplier_id_map[vendno] = inserted_id
@@ -132,12 +154,6 @@ def load_suppliers(suppliers_file, db):
 # Load Customers
 ###################################
 def load_customers(customers_file, db):
-    """
-    1) Read customer data from JSON
-    2) Create a Contact doc for each 'CONTACT'
-    3) Create a Customer doc referencing that contact
-    4) Return a map: { legacy_customer_code: new_customer_objectid }
-    """
     with open(customers_file, 'r', encoding='utf-8') as f:
         customer_data = json.load(f)
 
@@ -154,8 +170,7 @@ def load_customers(customers_file, db):
             phone=safe_str(item.get("PHONE")),
             fax=safe_str(item.get("FAXNO")),
             email=safe_str(item.get("EMAIL")),
-            company=safe_str(item.get("COMPANY")),
-            title=""  # or item.get("TITLE") if they have it
+            company=safe_str(item.get("COMPANY"))
         )
 
         customer_doc = {
@@ -170,22 +185,21 @@ def load_customers(customers_file, db):
                 "country": safe_str(item.get("COUNTRY")),
                 "zip": safe_str(item.get("ZIP")),
             },
+            # new array for shipping addresses is empty by default
+            "shipping_addresses": [],
             "contacts": [],
-            "collect_account": [],  # If you have to fill in from other fields, do so
+            "collect_account": [],  # Fill in if you have data
             "terms": safe_str(item.get("PTERMS")),
             "notes": safe_str(item.get("COMMENT")),
         }
 
-        # Add contact reference
         if contact_id:
             customer_doc["contacts"].append(contact_id)
 
         new_customer_docs.append(customer_doc)
 
-    # Insert them
     result = db.customers.insert_many(new_customer_docs)
 
-    # Build map from custno -> inserted_id
     for old_item, inserted_id in zip(customer_data, result.inserted_ids):
         custno = safe_str(old_item.get("CUSTNO"))
         customer_id_map[custno] = inserted_id
@@ -196,20 +210,12 @@ def load_customers(customers_file, db):
 # Load Parts
 ###################################
 def load_parts(parts_file, db, supplier_id_map):
-    """
-    1) Read parts data from JSON
-    2) Lookup part's supplier in supplier_id_map
-    3) Create a Part doc referencing the supplier
-    """
     with open(parts_file, 'r', encoding='utf-8') as f:
         parts_data = json.load(f)
 
     new_part_docs = []
     for item in parts_data:
-        # This is the old code that references the supplier
         legacy_supplier_code = safe_str(item.get("SUPPLIER"))
-
-        # Look up the new ObjectId from your map
         supplier_ref = supplier_id_map.get(legacy_supplier_code)
 
         part_doc = {
@@ -217,23 +223,96 @@ def load_parts(parts_file, db, supplier_id_map):
             "description": safe_str(item.get("DESCRIP")),
             "suppliers": [],
             "quantity_on_hand": safe_convert_int(item.get("ONHAND"), 0),
-            "default_price": int(safe_convert_float(item.get("PRICE"), 0.0) * 100),  # store in cents
+            "default_price": int(safe_convert_float(item.get("PRICE"), 0.0) * 100),
             "alternate_part_id": []
         }
 
-        # If we found a supplier
         if supplier_ref:
             part_doc["suppliers"].append(supplier_ref)
 
         new_part_docs.append(part_doc)
 
-    db.parts.insert_many(new_part_docs)
+    if new_part_docs:
+        db.parts.insert_many(new_part_docs)
+
+###################################
+# NEW: Load Shipping Addresses
+###################################
+def load_customer_shipping_addresses(shipping_file, db, customer_id_map):
+    """
+    Reads a JSON file containing shipping addresses for customers, e.g.:
+
+    {
+      "CUSTNO": "UNITED",
+      "SONO": "   51550",
+      "ADTYPE": "",
+      "COMPANY": "UNITED GLOVE COMPANY",
+      "ADDRESS1": "2017 N. STEWART AVENUE",
+      "ADDRESS2": "",
+      "ADDRESS3": "NEWTON, NC 28658"
+    }
+
+    We'll parse 'ADDRESS3' for city, state, zip. We'll treat "COMPANY" as
+    the 'name' of the shipping address, 'ADDRESS1' = street, 'ADDRESS2' = unit, etc.
+
+    We group addresses by CUSTNO, then do a single update per customer
+    pushing all the addresses into "shipping_addresses".
+    """
+    with open(shipping_file, 'r', encoding='utf-8') as f:
+        shipping_data = json.load(f)
+
+    # Group addresses by customer number
+    shipping_dict = defaultdict(list)
+
+    for item in shipping_data:
+        custno = safe_str(item.get("CUSTNO"))
+        name = safe_str(item.get("COMPANY"))
+        street = safe_str(item.get("ADDRESS1"))
+        unit = safe_str(item.get("ADDRESS2"))
+        addr3 = safe_str(item.get("ADDRESS3"))
+
+        city, state, zip_ = parse_city_state_zip(addr3)
+
+        # Build a shipping address document matching addressSchema
+        shipping_addr = {
+            "name": name,
+            "street": street,
+            "unit": unit,
+            "city": city,
+            "state": state,
+            "country": "",  # Not provided in this data
+            "zip": zip_,
+            "isDefault": False  # or True if you have logic for defaults
+        }
+
+        shipping_dict[custno].append(shipping_addr)
+
+    # Now update each customer's shipping_addresses array
+    for custno, addresses in shipping_dict.items():
+        if not addresses:
+            continue
+
+        # Find the new ObjectId from the map
+        cust_id = customer_id_map.get(custno)
+        if not cust_id:
+            # If there's no matching customer, skip or log a warning
+            print(f"WARNING: no matching customer for CUSTNO='{custno}' - skipping shipping addresses.")
+            continue
+
+        db.customers.update_one(
+            {"_id": cust_id},
+            {
+                # Push all addresses at once
+                "$push": {
+                    "shipping_addresses": {"$each": addresses}
+                }
+            }
+        )
 
 ###################################
 # Main Migration Script
 ###################################
 def main():
-    # Connect to MongoDB
     client = pymongo.MongoClient("mongodb://localhost:27017/")
     db = client["migrationtest"]
 
@@ -245,9 +324,13 @@ def main():
     customer_id_map = load_customers("json/CustomerInfo.json", db)
     print(f"Imported {len(customer_id_map)} customers.")
 
-    # 3) Parts (reference suppliers)
+    # 3) Parts referencing suppliers
     load_parts("json/Inventory.json", db, supplier_id_map)
-    print("Imported parts referencing suppliers.")
+    print("Imported parts.")
+
+    # 4) Shipping addresses for customers
+    load_customer_shipping_addresses("json/CustomerShipping.json", db, customer_id_map)
+    print("Updated customer shipping addresses.")
 
     print("Data migration completed successfully.")
 
