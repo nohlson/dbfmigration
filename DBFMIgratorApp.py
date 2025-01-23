@@ -2,7 +2,7 @@ import os
 import json
 import tkinter as tk
 from tkinter import filedialog, ttk, messagebox, scrolledtext
-from dbfread import DBF
+from dbfread import DBF, FieldParser
 from pymongo import MongoClient
 from openai import OpenAI
 import hashlib
@@ -14,6 +14,26 @@ from tkhtmlview import HTMLLabel
 key_file_path = os.path.join(os.path.dirname(__file__), "key")
 with open(key_file_path, "r") as key_file:
     client = OpenAI(api_key=key_file.read().strip())
+
+class CustomFieldParser(FieldParser):
+    def parseN(self, field, data):
+        """Parse numeric field (N)
+
+        Returns int, float or None if the field is empty.
+        """
+        # In some files * is used for padding.
+        data = data.strip().strip(b'*')
+
+        try:
+            return int(data)
+        except ValueError:
+            if not data.strip():
+                return None
+            elif data.strip() == b'.':
+                return None
+            else:
+                # Account for , in numeric fields
+                return float(data.replace(b',', b'.'))
 
 class DBFMigratorApp:
     def __init__(self, root):
@@ -170,14 +190,8 @@ class DBFMigratorApp:
         print("SUMMARY:")
         print(summary)
         print("################")
-        summary = formatted_html = (
-            "<style>"
-            "body { font-family: Arial, sans-serif; }"
-            "ul, ol { padding-left: 20px; }"
-            "li { margin-bottom: 5px; }"
-            "</style>"
-            + self.format_markdown(summary)
-)
+        summary = self.format_markdown(summary)
+
         summary = "Schema: " + ", ".join(self.schema_data) + "<br><br>" + summary
 
         # Update UI with schema preview and summary
@@ -185,7 +199,7 @@ class DBFMigratorApp:
 
     def read_dbf(self, filepath):
         try:
-            table = DBF(filepath, load=True)
+            table = DBF(filepath, parserclass=CustomFieldParser, load=True)
             return [dict(record) for record in table]
         except Exception as e:
             messagebox.showerror("Error", f"Failed to read DBF file: {e}")
