@@ -7,6 +7,8 @@ from pymongo import MongoClient
 from openai import OpenAI
 import hashlib
 import pickle
+import markdown
+from tkhtmlview import HTMLLabel
 
 # Load OpenAI API key from file
 key_file_path = os.path.join(os.path.dirname(__file__), "key")
@@ -64,8 +66,8 @@ class DBFMigratorApp:
         self.preview_text = scrolledtext.ScrolledText(right_panel, wrap=tk.WORD, height=15)
         self.preview_text.pack(fill=tk.BOTH, expand=True, pady=5)
 
-        self.schema_text = scrolledtext.ScrolledText(right_panel, wrap=tk.WORD, height=5)
-        self.schema_text.pack(fill=tk.BOTH, expand=True, pady=5)
+        self.schema_label = HTMLLabel(right_panel, html="<p>Schema Preview</p>")
+        self.schema_label.pack(fill=tk.BOTH, expand=True, pady=5)
 
     def load_cache(self):
         try:
@@ -119,6 +121,10 @@ class DBFMigratorApp:
 
         return list(self.preview_data[0].keys()) if isinstance(self.preview_data, list) and self.preview_data else []
 
+    def format_markdown(self, summary):
+        """Convert markdown to HTML with better list handling."""
+        return markdown.markdown(summary, extensions=['extra', 'nl2br'])
+
     def load_and_preview(self, event=None):
         selected_indices = self.file_listbox.curselection()
         if not selected_indices:
@@ -160,9 +166,22 @@ class DBFMigratorApp:
         self.preview_text.delete("1.0", tk.END)
         self.preview_text.insert(tk.END, json.dumps(self.preview_data, indent=4, default=str))
 
+        # Combine schema data and markdown summary
+        print("SUMMARY:")
+        print(summary)
+        print("################")
+        summary = formatted_html = (
+            "<style>"
+            "body { font-family: Arial, sans-serif; }"
+            "ul, ol { padding-left: 20px; }"
+            "li { margin-bottom: 5px; }"
+            "</style>"
+            + self.format_markdown(summary)
+)
+        summary = "Schema: " + ", ".join(self.schema_data) + "<br><br>" + summary
+
         # Update UI with schema preview and summary
-        self.schema_text.delete("1.0", tk.END)
-        self.schema_text.insert(tk.END, "Schema:\n" + ", ".join(self.schema_data) + "\n\n" + summary)
+        self.schema_label.set_html(summary)
 
     def read_dbf(self, filepath):
         try:
