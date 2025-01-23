@@ -3,6 +3,8 @@ import pymongo
 from collections import defaultdict
 from bson.objectid import ObjectId
 
+MONGO_HOSTNAME = "localhost"
+
 ##############################
 # Helper Conversion Functions
 ##############################
@@ -313,7 +315,7 @@ def load_customer_shipping_addresses(shipping_file, db, customer_id_map):
 # Main Migration Script
 ###################################
 def main():
-    client = pymongo.MongoClient("mongodb://localhost:27017/")
+    client = pymongo.MongoClient("mongodb://" + MONGO_HOSTNAME + ":27017/")
     db = client["migrationtest"]
 
     # 1) Suppliers (and their Contacts)
