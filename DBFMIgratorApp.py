@@ -199,7 +199,7 @@ class DBFMigratorApp:
 
     def read_dbf(self, filepath):
         try:
-            table = DBF(filepath, parserclass=CustomFieldParser, load=True)
+            table = DBF(filepath, encoding='cp1252', parserclass=CustomFieldParser, load=True)
             return [dict(record) for record in table]
         except Exception as e:
             messagebox.showerror("Error", f"Failed to read DBF file: {e}")
