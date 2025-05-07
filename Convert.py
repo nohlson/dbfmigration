@@ -11,16 +11,19 @@ def safe_convert_int(value, default=0):
     try:
         return int(value)
     except (ValueError, TypeError):
+        print(f"WARNING: Failed to convert '{value}' to int. Using default {default}.")
         return default
 
 def safe_convert_float(value, default=0.0):
     try:
         return float(value)
     except (ValueError, TypeError):
+        print(f"WARNING: Failed to convert '{value}' to float. Using default {default}.")
         return default
 
 def safe_str(value, default=""):
     if value is None:
+        print(f"WARNING: None value encountered. Using default '{default}'.")
         return default
     return str(value).strip()
 
@@ -210,7 +213,7 @@ def load_customers(customers_file, db):
 ###################################
 # Load Parts
 ###################################
-def load_parts(parts_file, db, supplier_id_map):
+def load_parts(parts_file, parts_notes_file, db, supplier_id_map):
     with open(parts_file, 'r', encoding='utf-8') as f:
         parts_data = json.load(f)
 
@@ -225,13 +228,26 @@ def load_parts(parts_file, db, supplier_id_map):
             "suppliers": [],
             "quantity_on_hand": safe_convert_int(item.get("ONHAND"), 0),
             "default_price": int(safe_convert_float(item.get("PRICE"), 0.0) * 100),
-            "alternate_part_id": []
+            "location": safe_str(item.get("SEQ")),
+            "alternate_part_id": [],
+            "notes": safe_str(item.get("VPARTNO"))
         }
 
         if supplier_ref:
             part_doc["suppliers"].append(supplier_ref)
 
         new_part_docs.append(part_doc)
+
+    with open(parts_notes_file, 'r', encoding='utf-8') as f:
+        parts_notes_data = json.load(f)
+
+    for item in parts_notes_data:
+        legacy_part_number = safe_str(item.get("ITEM"))
+        part_doc = next((doc for doc in new_part_docs if doc["item_number"] == legacy_part_number), None)
+
+        if part_doc:
+            # Append notes to the existing part document
+            part_doc["notes"] += "\n" + safe_str(item.get("COMMENT"))
 
     if new_part_docs:
         db.parts.insert_many(new_part_docs)
@@ -321,6 +337,7 @@ def main():
     parser.add_argument("--suppliers-file", type=str, required=True, help="Path to suppliers JSON file")
     parser.add_argument("--customers-file", type=str, required=True, help="Path to customers JSON file")
     parser.add_argument("--parts-file", type=str, required=True, help="Path to parts JSON file")
+    parser.add_argument("--parts-notes-file", type=str, required=True, help="Path to parts notes JSON file")
     parser.add_argument("--shipping-file", type=str, required=True, help="Path to customer shipping addresses JSON file")
 
     args = parser.parse_args()
@@ -330,6 +347,7 @@ def main():
     suppliers_file = args.suppliers_file
     customers_file = args.customers_file
     parts_file = args.parts_file
+    parts_notes_file = args.parts_notes_file
     shipping_file = args.shipping_file
 
     # Connect to MongoDB
@@ -345,7 +363,7 @@ def main():
     print(f"Imported {len(customer_id_map)} customers.")
 
     # 3) Parts referencing suppliers
-    load_parts(parts_file, db, supplier_id_map)
+    load_parts(parts_file, parts_notes_file, db, supplier_id_map)
     print("Imported parts.")
 
     # 4) Shipping addresses for customers
