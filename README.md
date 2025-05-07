@@ -14,3 +14,18 @@ CustomerShipping.json: SOADDR01
 For Convert.py:
 Create a directory called `json` at top level, include `Inventory.json`, `CustomerInfo.json`, `SupplierInfo.json`, and `CustomerShipping.json`. These will be command line arguments
 for `Convert.py`
+
+
+
+Backing up mongodb docker container
+
+```
+docker exec mongodb mongodump --db migrationtest --archive --gzip > backups/migrationtest_$(date +%F_%H-%M).gz
+```
+
+
+Restore from backup
+
+```
+cat backups/migrationtest_2025-05-07_16-00.gz | docker exec -i mongodb mongorestore --archive --gzip --nsInclude="migrationtest.*" --drop
+```
