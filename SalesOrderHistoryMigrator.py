@@ -8,7 +8,7 @@ Capabilities:
 1. Loads sales lines from JSON
 2. Groups lines by SONO into individual orders
 3. Looks up Part and Customer ObjectIDs in MongoDB
-4. Builds Order documents with parts and a single freight method
+4. Builds Order documents with parts, a single freight method, and custom timestamps
 5. Supports dry-run mode to preview operations without modifying the database
 """
 import argparse
@@ -16,6 +16,11 @@ import json
 import sys
 from datetime import datetime
 from pymongo import MongoClient, InsertOne
+from pymongo.errors import BulkWriteError
+from datetime import datetime, time
+from zoneinfo import ZoneInfo
+
+eastern = ZoneInfo("America/New_York")
 
 def safe_str(value, default=""):
     """Convert a value to string safely, return default if None."""
@@ -31,7 +36,7 @@ def safe_convert_float(value, default=0.0):
         return default
 
 def parse_date(value, default=None):
-    """Parse a YYYY-MM-DD date string into a datetime.date, return default on failure."""
+    """Parse a YYYY-MM-DD date string into a datetime, return default on failure."""
     if not value:
         return default
     try:
@@ -57,16 +62,14 @@ def migrate_sales_orders(
     orders_map = {}
     for line in sales_data:
         sono = safe_str(line.get("SONO"))
-        if sono not in orders_map:
-            orders_map[sono] = []
-        orders_map[sono].append(line)
+        orders_map.setdefault(sono, []).append(line)
 
     print(f"Grouped into {len(orders_map)} distinct orders")
 
-    # Ensure indexes
+    # Ensure unique index on order_number
     if not dry_run:
         db.orders.create_index("order_number", unique=True, background=True)
-    
+
     bulk_ops = []
     processed = 0
 
@@ -79,7 +82,7 @@ def migrate_sales_orders(
             continue
         customer_id = customer.get("_id")
 
-        # Build parts list
+        # Build parts list and freight shipped parts
         parts_list = []
         shipped_parts = []
         for line in lines:
@@ -93,10 +96,9 @@ def migrate_sales_orders(
             qty_shp = safe_convert_float(line.get("QTYSHP"), 0.0)
             price = safe_convert_float(line.get("PRICE"), 0.0)
 
-            # Price in mongo is stored as an integer (cents)
             price = int(price * 100) if price else 0
 
-            # total quantity for parts array
+            # total quantity for order.parts
             total_qty = qty_ord + qty_shp
             parts_list.append({
                 "part_id": part_id,
@@ -116,9 +118,23 @@ def migrate_sales_orders(
             continue
 
         # Parse dates
-        order_date = parse_date(lines[0].get("ORDATE"), datetime.utcnow())
-        ship_date = parse_date(lines[0].get("SHIPDATE"), datetime.utcnow())
+        _raw_order = lines[0].get("ORDATE").strip()
+        _raw_ship  = lines[0].get("SHIPDATE").strip()
 
+        # build a noon-local datetime, then convert to UTC
+        order_date = (
+            datetime.combine(datetime.strptime(_raw_order, "%Y-%m-%d").date(),
+                            time(hour=12, minute=0),
+                            tzinfo=eastern)
+            .astimezone(ZoneInfo("UTC"))
+        )
+
+        ship_date = (
+            datetime.combine(datetime.strptime(_raw_ship, "%Y-%m-%d").date(),
+                            time(hour=12, minute=0),
+                            tzinfo=eastern)
+            .astimezone(ZoneInfo("UTC"))
+        )
         # Build freight method record
         freight_method = {
             "account_type": account_type,
@@ -128,16 +144,16 @@ def migrate_sales_orders(
             "shipping_cost": 0,
             "shipping_date": ship_date,
             "comments": "",
-            "paid": False,
-            "date_paid": None,
+            "paid": True,
+            "date_paid": ship_date,
             "check_number": "",
             "invoice_number": 1
         }
 
-        # Compute total price: sum parts + shipping_cost
+        # Compute total order price
         total_price = sum(p["quantity"] * p["price"] for p in parts_list)
 
-        # Construct order document
+        # Construct order document with custom timestamps
         order_doc = {
             "order_number": sono,
             "customer": customer_id,
@@ -147,23 +163,25 @@ def migrate_sales_orders(
             "dropship_methods": [],
             "terms": terms,
             "sales_person": sales_person_id,
-            "notes": "",
+            "notes": "Imported from VisionPoint",
             "total_price": total_price,
             "status": "Draft",
-            "customer_purchase_order_number": None
+            "customer_purchase_order_number": None,
+            # MongoDB timestamps override
+            "createdAt": order_date,
+            "updatedAt": ship_date
         }
 
         bulk_ops.append(InsertOne(order_doc))
         processed += 1
 
-        # Execute in batches
+        # Execute batches
         if len(bulk_ops) >= batch_size:
             if dry_run:
                 print(f"DRY RUN: Would insert {len(bulk_ops)} orders")
             else:
                 print(f"Inserting batch of {len(bulk_ops)} orders...")
-                result = db.orders.bulk_write(bulk_ops)
-                print(f"  Inserted {len(bulk_ops)} orders")
+                db.orders.bulk_write(bulk_ops)
             bulk_ops = []
 
     # Final batch
@@ -172,10 +190,17 @@ def migrate_sales_orders(
             print(f"DRY RUN: Would insert {len(bulk_ops)} orders")
         else:
             print(f"Inserting final batch of {len(bulk_ops)} orders...")
-            result = db.orders.bulk_write(bulk_ops)
-            print(f"  Inserted {len(bulk_ops)} orders")
+            try:
+                # unordered ⇒ continue on errors (e.g. dup keys)
+                result = db.orders.bulk_write(bulk_ops, ordered=False)
+                print(f"Inserted {result.inserted_count} new orders (skipped collisions).")
+            except BulkWriteError as bwe:
+                # bwe.details['writeErrors'] contains the errors that occurred
+                inserted = bwe.details.get("nInserted", 0)
+                skips = len(bwe.details.get("writeErrors", []))
+                print(f"Inserted {inserted} new orders, skipped {skips} duplicates.")
 
-    print(f"Processed {processed} orders total.")
+                print(f"Processed {processed} orders total.")
 
 
 def main():
