@@ -65,3 +65,10 @@ python3 FixItemNumberDotZero.py \
   --database-name acusprod \
   --batch-size 500
   ```
+
+
+  SalesOrderMissingPartsImporter.py
+  Takes output from the SalesOrderHistoryMigrator.py with the missing parts and pulls them from a Inventory.json file and puts them in the mongodb database. It pulls suppliers from the SupplierInfo.json. This is useful for when sales order items are being imported but it shows that it can't find parts in mongo that are present in the sales order.
+  ```
+  python3 SalesOrderMissingPartsImporter.py   --warnings-file missing_parts.log   --parts-file json/InventoryNew.json   --suppliers-file json/SupplierInfo.json   --mongo-hostname localhost   --mongo-port 27017   --database-name acusprod
+  ```
