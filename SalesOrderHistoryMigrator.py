@@ -7,24 +7,32 @@ This script reads legacy sales order invoice data and part lines from two JSON f
   - SalesOrderParts.json (for original ORDATE lookup)
 It groups invoice entries by sales order number, looks up customer and part ObjectIDs,
 and inserts Order documents into MongoDB with correct dates, parts, and freight methods.
+All dates are converted from Eastern Time at 12:00 to UTC to preserve local date.
 Supports custom timestamps and dry-run preview.
 """
 import argparse
 import json
 import sys
-from datetime import datetime
+from datetime import datetime, time
+from zoneinfo import ZoneInfo
 from pymongo import MongoClient, InsertOne
+
+# Timezones
+eastern = ZoneInfo("America/New_York")
+utc = ZoneInfo("UTC")
 
 def safe_str(value, default=""):
     if value is None:
         return default
     return str(value).strip()
 
+
 def safe_convert_float(value, default=0.0):
     try:
         return float(value)
     except (ValueError, TypeError):
         return default
+
 
 def parse_date(value, default=None):
     if not value:
@@ -33,6 +41,16 @@ def parse_date(value, default=None):
         return datetime.strptime(value.strip(), "%Y-%m-%d")
     except ValueError:
         return default
+
+
+def eastern_noon_utc(date_str, default=None):
+    """Return a UTC datetime corresponding to 12:00 noon Eastern of the given YYYY-MM-DD string."""
+    d = parse_date(date_str)
+    if not d:
+        return default
+    dt_local = datetime.combine(d.date(), time(hour=12), tzinfo=eastern)
+    return dt_local.astimezone(utc)
+
 
 def migrate_sales_orders(
     invoice_file,
@@ -53,21 +71,22 @@ def migrate_sales_orders(
     parts_lines = json.load(open(parts_file, encoding="utf-8"))
     print(f"Found {len(parts_lines)} part lines in JSON file")
 
-    # Build a lookup of ORDATE by SONO from parts_lines
+    # Build ORDATE UTC lookup by SONO
     order_date_map = {}
     for line in parts_lines:
         sono = safe_str(line.get("SONO"))
         if sono not in order_date_map and line.get("ORDATE"):
-            order_date_map[sono] = parse_date(line.get("ORDATE"), None)
+            dt_utc = eastern_noon_utc(line.get("ORDATE"))
+            if dt_utc:
+                order_date_map[sono] = dt_utc
 
-    # Group invoice entries by sales order number
+    # Group invoice entries by SONO
     orders_map = {}
     for inv in invoices:
         sono = safe_str(inv.get("SONO"))
         orders_map.setdefault(sono, []).append(inv)
     print(f"Grouped into {len(orders_map)} distinct orders from invoice data")
 
-    # Ensure unique index on order_number
     if not dry_run:
         db.orders.create_index("order_number", unique=True, background=True)
 
@@ -83,10 +102,15 @@ def migrate_sales_orders(
             continue
         customer_id = customer.get("_id")
 
-        # Determine order date from parts lookup
-        order_date = order_date_map.get(sono, datetime.utcnow())
-        # Determine ship date from first invoice line
-        ship_date = parse_date(inv_lines[0].get("SHIPDATE"), datetime.utcnow())
+        # Determine dates
+        order_date = order_date_map.get(
+            sono,
+            eastern_noon_utc(inv_lines[0].get("ORDATE"), datetime.utcnow().replace(tzinfo=utc))
+        )
+        ship_date = eastern_noon_utc(
+            inv_lines[0].get("SHIPDATE"),
+            datetime.utcnow().replace(tzinfo=utc)
+        )
 
         parts_list = []
         shipped_parts = []
@@ -102,24 +126,13 @@ def migrate_sales_orders(
 
             price = int(price * 100)  # Convert to cents
 
-            # Add to order parts (quantity = shipped only)
-            parts_list.append({
-                "part_id": part_id,
-                "quantity": qty_shp,
-                "price": price
-            })
-
-            shipped_parts.append({
-                "part_id": part_id,
-                "quantity": qty_shp,
-                "price": price
-            })
+            parts_list.append({"part_id": part_id, "quantity": qty_shp, "price": price})
+            shipped_parts.append({"part_id": part_id, "quantity": qty_shp, "price": price})
 
         if not parts_list:
             print(f"WARNING: No valid parts for order {sono}. Skipping.")
             continue
 
-        # Build freight method record
         freight_method = {
             "account_type": account_type,
             "account_number": account_number,
@@ -156,7 +169,6 @@ def migrate_sales_orders(
         bulk_ops.append(InsertOne(order_doc))
         processed += 1
 
-        # Execute in batches
         if len(bulk_ops) >= batch_size:
             if dry_run:
                 print(f"DRY RUN: Would insert {len(bulk_ops)} orders")
@@ -165,7 +177,6 @@ def migrate_sales_orders(
                 db.orders.bulk_write(bulk_ops, ordered=False)
             bulk_ops = []
 
-    # Final batch
     if bulk_ops:
         if dry_run:
             print(f"DRY RUN: Would insert {len(bulk_ops)} orders")
