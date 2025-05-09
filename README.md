@@ -41,15 +41,7 @@ python3 UpdatePartNotesQuantities.py --mongo-hostname localhost --database-name 
 
 Using SalesOrderHistoryMigrator.py:
 ```
-python3 SalesOrderHistoryMigrator.py \           
-  --mongo-hostname localhost \
-  --mongo-port 27017 \
-  --database-name acusprod \
-  --sales-file  json/SalesOrderParts.json  --sales-person-id 67920d24cb35698e16a230f0 \ 
-  --account-type UPS \
-  --account-number 5094X3 \
-  --terms "Net 30" \
-  --batch-size 500
+python3 SalesOrderHistoryMigrator.py  --mongo-hostname localhost   --mongo-port 27017   --database-name acusprod   --parts-file  json/SalesOrderParts.json --invoice-file json/SalesOrderInvoice.json  --sales-person-id 67920d24cb35698e16a230f0   --account-type UPS   --account-number 5094X3   --terms "Net 30"   --batch-size 500
 ```
 
 
